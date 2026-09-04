@@ -12,9 +12,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   timeout: 30_000,
-  expect: {
-    timeout: 5_000,
-  },
+  expect: { timeout: 5_000 },
   use: {
     baseURL,
     browserName: 'chromium',
@@ -27,12 +25,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   projects: [
-    {
-      name: 'desktop-chrome',
-      use: {
-        viewport: { width: 1_440, height: 900 },
-      },
-    },
+    { name: 'desktop-chrome', use: { viewport: { width: 1_440, height: 900 } } },
     {
       name: 'mobile-chrome',
       use: {
@@ -44,9 +37,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run start',
+    command: 'npm run dev:web',
     url: baseURL,
     reuseExistingServer: !process.env.CI,
-    timeout: 10_000,
+    timeout: 15_000,
   },
 });

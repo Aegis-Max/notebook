@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="512"
+  height="512"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="logo-title logo-description"
+>
+  <title id="logo-title">康奈尔笔记</title>
+  <desc id="logo-description">森林绿圆角底板上的米白色康奈尔笔记分栏</desc>
+
+  <!-- 米白外缘使图标在深色皮肤中保持清晰。 -->
+  <rect x="3" y="3" width="58" height="58" rx="16" fill="#FDFBF6"/>
+  <rect x="6" y="6" width="52" height="52" rx="13" fill="#15543F"/>
+
+  <!-- 单页剪影与两道负形分隔，组成线索、笔记、总结三个区域。 -->
+  <rect x="14" y="13" width="36" height="38" rx="5" fill="#FDFBF6"/>
+  <path d="M25 13h4v27h-4zM14 38h36v4H14z" fill="#15543F"/>
+</svg>

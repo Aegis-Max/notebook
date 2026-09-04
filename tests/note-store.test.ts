@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import { test } from 'vitest';
 
 import {
   NoteStoreError,
@@ -16,25 +16,25 @@ import {
   sortNotes,
   validateBackup,
   validateNote,
-} from '../src/note-store.js';
+  type Note,
+  type StorageLike,
+} from '../src/domain/note-store.js';
 
-class MemoryStorage {
-  constructor() {
-    this.values = new Map();
-    this.writes = [];
+class MemoryStorage implements StorageLike {
+  readonly values = new Map<string, string>();
+  readonly writes: Array<[string, string]> = [];
+
+  getItem(key: string): string | null {
+    return this.values.has(key) ? this.values.get(key) ?? null : null;
   }
 
-  getItem(key) {
-    return this.values.has(key) ? this.values.get(key) : null;
-  }
-
-  setItem(key, value) {
+  setItem(key: string, value: string): void {
     this.values.set(key, String(value));
     this.writes.push([key, String(value)]);
   }
 }
 
-function makeNote(overrides = {}) {
+function makeNote(overrides: Partial<Note> = {}): Note {
   return {
     id: 'note-a',
     title: '网络课程',
@@ -91,7 +91,7 @@ test('createNote 尊重显式日期与时间字段', () => {
 });
 
 test('createNote 拒绝无效时钟和无效初始值', () => {
-  assert.throws(() => createNote(null), NoteStoreError);
+  assert.throws(() => createNote(null as never), NoteStoreError);
   assert.throws(() => createNote({}, { now: 'not-a-date' }), /now/);
 });
 
@@ -123,7 +123,7 @@ test('validateNote 返回规范化结果且不抛异常', () => {
   assert.deepEqual(valid.errors, []);
   assert.deepEqual(valid.note, makeNote());
 
-  const invalid = validateNote(makeNote({ notes: 42 }));
+  const invalid = validateNote(makeNote({ notes: 42 as unknown as string }));
   assert.equal(invalid.valid, false);
   assert.equal(invalid.note, null);
   assert.match(invalid.errors[0], /notes/);
@@ -149,10 +149,7 @@ test('笔记验证拒绝空 ID、错误日期、错误时间及倒序时间', ()
 });
 
 test('sortNotes 按更新时间、创建时间降序并保持输入与完全平手顺序', () => {
-  const oldest = makeNote({
-    id: 'oldest',
-    updatedAt: '2026-09-03T01:00:00.000Z',
-  });
+  const oldest = makeNote({ id: 'oldest', updatedAt: '2026-09-03T01:00:00.000Z' });
   const tieFirst = makeNote({ id: 'tie-first' });
   const tieSecond = makeNote({ id: 'tie-second' });
   const newestCreated = makeNote({
@@ -182,22 +179,10 @@ test('searchNotes 搜索全部用户字段、忽略大小写并支持多个关�
     makeNote({ id: 'c', title: '其他', summary: 'TCP 已掌握' }),
   ];
 
-  assert.deepEqual(
-    searchNotes(notes, 'tcp').map((note) => note.id),
-    ['a', 'c'],
-  );
-  assert.deepEqual(
-    searchNotes(notes, '数据库 scan').map((note) => note.id),
-    ['b'],
-  );
-  assert.deepEqual(
-    searchNotes(notes, '2026-09-03 三次').map((note) => note.id),
-    ['a'],
-  );
-  assert.deepEqual(
-    searchNotes(notes, '  ').map((note) => note.id),
-    ['b', 'a', 'c'],
-  );
+  assert.deepEqual(searchNotes(notes, 'tcp').map((note) => note.id), ['a', 'c']);
+  assert.deepEqual(searchNotes(notes, '数据库 scan').map((note) => note.id), ['b']);
+  assert.deepEqual(searchNotes(notes, '2026-09-03 三次').map((note) => note.id), ['a']);
+  assert.deepEqual(searchNotes(notes, '  ').map((note) => note.id), ['b', 'a', 'c']);
 });
 
 test('saveNotes 写入带版本的确定性数据，loadNotes 读回并排序', () => {
@@ -213,12 +198,9 @@ test('saveNotes 写入带版本的确定性数据，loadNotes 读回并排序', 
   assert.equal(storage.writes.length, 1);
   assert.equal(storage.writes[0][0], STORAGE_KEY);
 
-  const saved = JSON.parse(storage.writes[0][1]);
+  const saved = JSON.parse(storage.writes[0][1]) as { schemaVersion: number; notes: Note[] };
   assert.equal(saved.schemaVersion, 1);
-  assert.deepEqual(
-    saved.notes.map((note) => note.id),
-    ['newer', 'older'],
-  );
+  assert.deepEqual(saved.notes.map((note) => note.id), ['newer', 'older']);
 
   const loaded = loadNotes(storage);
   assert.equal(loaded.error, null);
@@ -252,16 +234,17 @@ test('loadNotes 捕获 Storage 读取异常与不可用对象', () => {
     },
   });
   assert.deepEqual(failed.notes, []);
-  assert.equal(failed.error.code, 'STORAGE_READ_FAILED');
-  assert.equal(failed.error.cause, thrown);
+  assert.equal(failed.error?.code, 'STORAGE_READ_FAILED');
+  assert.equal(failed.error?.cause, thrown);
 
   const unavailable = loadNotes({});
-  assert.equal(unavailable.error.code, 'STORAGE_UNAVAILABLE');
+  assert.equal(unavailable.error?.code, 'STORAGE_UNAVAILABLE');
 });
 
 test('默认 localStorage getter 抛错时读写接口都返回结构化失败', () => {
-  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  Object.defineProperty(globalThis, 'localStorage', {
+  const storageGlobal = globalThis as unknown as { localStorage?: StorageLike };
+  const originalDescriptor = Object.getOwnPropertyDescriptor(storageGlobal, 'localStorage');
+  Object.defineProperty(storageGlobal, 'localStorage', {
     configurable: true,
     get() {
       throw new DOMException('访问被拒绝', 'SecurityError');
@@ -271,30 +254,33 @@ test('默认 localStorage getter 抛错时读写接口都返回结构化失败',
   try {
     const loaded = loadNotes();
     assert.deepEqual(loaded.notes, []);
-    assert.equal(loaded.error.code, 'STORAGE_UNAVAILABLE');
+    assert.equal(loaded.error?.code, 'STORAGE_UNAVAILABLE');
 
     const saved = saveNotes([makeNote()]);
     assert.equal(saved.ok, false);
-    assert.equal(saved.error.code, 'STORAGE_UNAVAILABLE');
+    assert.equal(saved.error?.code, 'STORAGE_UNAVAILABLE');
   } finally {
     if (originalDescriptor) {
-      Object.defineProperty(globalThis, 'localStorage', originalDescriptor);
+      Object.defineProperty(storageGlobal, 'localStorage', originalDescriptor);
     } else {
-      delete globalThis.localStorage;
+      delete storageGlobal.localStorage;
     }
   }
 });
 
 test('saveNotes 捕获写入异常，且无效数据不会触发写入', () => {
   const thrown = new Error('quota exceeded');
-  const failed = saveNotes({
-    setItem() {
-      throw thrown;
+  const failed = saveNotes(
+    {
+      setItem() {
+        throw thrown;
+      },
     },
-  }, [makeNote()]);
+    [makeNote()],
+  );
   assert.equal(failed.ok, false);
-  assert.equal(failed.error.code, 'STORAGE_WRITE_FAILED');
-  assert.equal(failed.error.cause, thrown);
+  assert.equal(failed.error?.code, 'STORAGE_WRITE_FAILED');
+  assert.equal(failed.error?.cause, thrown);
 
   const storage = new MemoryStorage();
   const invalid = saveNotes(storage, [makeNote({ id: '' })]);
@@ -303,9 +289,10 @@ test('saveNotes 捕获写入异常，且无效数据不会触发写入', () => {
 });
 
 test('saveNotes(notes) 兼容使用默认存储的简写参数顺序', () => {
-  const originalStorage = globalThis.localStorage;
+  const storageGlobal = globalThis as unknown as { localStorage?: StorageLike };
+  const originalDescriptor = Object.getOwnPropertyDescriptor(storageGlobal, 'localStorage');
   const storage = new MemoryStorage();
-  Object.defineProperty(globalThis, 'localStorage', {
+  Object.defineProperty(storageGlobal, 'localStorage', {
     configurable: true,
     value: storage,
   });
@@ -314,13 +301,10 @@ test('saveNotes(notes) 兼容使用默认存储的简写参数顺序', () => {
     assert.deepEqual(saveNotes([makeNote()]), { ok: true, error: null });
     assert.equal(storage.writes[0][0], STORAGE_KEY);
   } finally {
-    if (originalStorage === undefined) {
-      delete globalThis.localStorage;
+    if (originalDescriptor) {
+      Object.defineProperty(storageGlobal, 'localStorage', originalDescriptor);
     } else {
-      Object.defineProperty(globalThis, 'localStorage', {
-        configurable: true,
-        value: originalStorage,
-      });
+      delete storageGlobal.localStorage;
     }
   }
 });
@@ -346,17 +330,15 @@ test('createBackup 生成可序列化、可验证、可再次解析的版本化�
 
   assert.equal(payload.schemaVersion, 1);
   assert.equal(payload.exportedAt, '2026-09-03T04:00:00.000Z');
-  assert.deepEqual(
-    payload.notes.map((note) => note.id),
-    ['newer', 'older'],
-  );
+  assert.deepEqual(payload.notes.map((note) => note.id), ['newer', 'older']);
   assert.deepEqual(parseBackup(`\uFEFF${json}`), payload.notes);
 });
 
 test('createBackup 将无效导出时间转换为可识别的备份错误', () => {
   assert.throws(
     () => createBackup([makeNote()], new Date(Number.NaN)),
-    (error) => error instanceof NoteStoreError && error.code === 'INVALID_BACKUP',
+    (error: unknown) =>
+      error instanceof NoteStoreError && error.code === 'INVALID_BACKUP',
   );
 });
 
@@ -433,9 +415,9 @@ test('mergeNotes 对同 ID 取较晚版本，时间相同保留本地版本', ()
     merged.map((note) => note.id),
     ['import-only', 'local-wins', 'import-wins', 'local-only', 'tie'],
   );
-  assert.equal(merged.find((note) => note.id === 'import-wins').title, '导入新版');
-  assert.equal(merged.find((note) => note.id === 'local-wins').title, '本地新版');
-  assert.equal(merged.find((note) => note.id === 'tie').title, '平手保留本地');
+  assert.equal(merged.find((note) => note.id === 'import-wins')?.title, '导入新版');
+  assert.equal(merged.find((note) => note.id === 'local-wins')?.title, '本地新版');
+  assert.equal(merged.find((note) => note.id === 'tie')?.title, '平手保留本地');
   assert.equal(local[1].title, '本地旧版');
   assert.equal(imported[0].title, '导入新版');
 });
