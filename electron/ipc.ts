@@ -7,11 +7,21 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron';
 
+import type {
+  AiConfigurationSaveResult,
+  AiConnectionResult,
+  AiDraftConfiguration,
+  AiModelDiscoveryResult,
+  AiProviderKind,
+} from '../src/types/desktop.js';
 import type { AiClient } from './ai-client.js';
 import { IPC_CHANNELS } from './channels.js';
 import type { DesktopDataService } from './data-service.js';
 import { DesktopError, errorMessage } from './errors.js';
-import type { SecureSettingsService } from './secure-settings.js';
+import {
+  normalizeAiDraftConfiguration,
+  type SecureSettingsService,
+} from './secure-settings.js';
 import type { StudyCoachService } from './study-coach.js';
 
 const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
@@ -51,6 +61,82 @@ function handle(
   });
 }
 
+function requireArgumentCount(args: unknown[], expected: number): void {
+  if (args.length !== expected) {
+    throw new DesktopError('INVALID_IPC_ARGUMENTS', '桌面调用参数无效');
+  }
+}
+
+function providerHint(candidate: unknown): AiProviderKind {
+  if (
+    candidate &&
+    typeof candidate === 'object' &&
+    'settings' in candidate &&
+    candidate.settings &&
+    typeof candidate.settings === 'object' &&
+    'provider' in candidate.settings &&
+    candidate.settings.provider === 'cloud'
+  ) {
+    return 'cloud';
+  }
+  return 'ollama';
+}
+
+function modelHint(candidate: unknown): string {
+  if (!candidate || typeof candidate !== 'object' || !('settings' in candidate)) {
+    return '';
+  }
+  const settings = candidate.settings;
+  if (!settings || typeof settings !== 'object') return '';
+  if (
+    'provider' in settings &&
+    settings.provider === 'cloud' &&
+    'cloudModel' in settings &&
+    typeof settings.cloudModel === 'string'
+  ) {
+    return settings.cloudModel.trim().slice(0, 200);
+  }
+  if ('ollamaModel' in settings && typeof settings.ollamaModel === 'string') {
+    return settings.ollamaModel.trim().slice(0, 200);
+  }
+  return '';
+}
+
+function validateAiDraftArguments(args: unknown[]): AiDraftConfiguration {
+  requireArgumentCount(args, 1);
+  return normalizeAiDraftConfiguration(args[0]);
+}
+
+function invalidAiDiscovery(candidate: unknown): AiModelDiscoveryResult {
+  return {
+    ok: false,
+    error: 'AI 草稿配置格式无效',
+    errorCode: 'INVALID_SETTINGS',
+    provider: providerHint(candidate),
+    models: [],
+  };
+}
+
+function invalidAiConnection(candidate: unknown): AiConnectionResult {
+  return {
+    ok: false,
+    error: 'AI 草稿配置格式无效',
+    errorCode: 'INVALID_SETTINGS',
+    provider: providerHint(candidate),
+    model: modelHint(candidate),
+    latencyMs: null,
+  };
+}
+
+function invalidAiConfiguration(): AiConfigurationSaveResult {
+  return {
+    ok: false,
+    error: 'AI 草稿配置格式无效',
+    errorCode: 'INVALID_SETTINGS',
+    settings: null,
+  };
+}
+
 async function chooseImportFile(window: BrowserWindow | null): Promise<string | null> {
   const options: Electron.OpenDialogOptions = {
     title: '导入康奈尔笔记备份',
@@ -81,10 +167,14 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   handle(IPC_CHANNELS.notesLoad, getWindow, async () => {
     try {
-      const database = await data.read();
-      return { notes: database.notes, error: null };
+      const result = await data.loadNotes();
+      return { ...result, error: null };
     } catch (error) {
-      return { notes: [], error: errorMessage(error, '读取笔记失败') };
+      return {
+        notes: [],
+        error: errorMessage(error, '读取笔记失败'),
+        isFirstRun: false,
+      };
     }
   });
 
@@ -164,17 +254,47 @@ export function registerIpcHandlers(services: IpcServices): void {
     });
   });
 
-  handle(IPC_CHANNELS.aiGetSettings, getWindow, () => settings.getSettings());
-  handle(IPC_CHANNELS.aiSaveSettings, getWindow, (_event, candidate) =>
-    settings.saveSettings(candidate),
-  );
-  handle(IPC_CHANNELS.aiSetCloudCredential, getWindow, (_event, secret) =>
-    settings.setCloudCredential(secret),
-  );
-  handle(IPC_CHANNELS.aiDeleteCloudCredential, getWindow, () =>
-    settings.deleteCloudCredential(),
-  );
-  handle(IPC_CHANNELS.aiTestConnection, getWindow, () => ai.testConnection());
+  handle(IPC_CHANNELS.aiGetSettings, getWindow, (_event, ...args) => {
+    requireArgumentCount(args, 0);
+    return settings.getSettings();
+  });
+  handle(IPC_CHANNELS.aiSaveSettings, getWindow, (_event, ...args) => {
+    requireArgumentCount(args, 1);
+    return settings.saveSettings(args[0]);
+  });
+  handle(IPC_CHANNELS.aiSetCloudCredential, getWindow, (_event, ...args) => {
+    requireArgumentCount(args, 1);
+    return settings.setCloudCredential(args[0]);
+  });
+  handle(IPC_CHANNELS.aiDeleteCloudCredential, getWindow, (_event, ...args) => {
+    requireArgumentCount(args, 0);
+    return settings.deleteCloudCredential();
+  });
+  handle(IPC_CHANNELS.aiTestConnection, getWindow, (_event, ...args) => {
+    requireArgumentCount(args, 0);
+    return ai.testConnection();
+  });
+  handle(IPC_CHANNELS.aiDiscoverModels, getWindow, (_event, ...args) => {
+    try {
+      return ai.discoverModels(validateAiDraftArguments(args));
+    } catch {
+      return invalidAiDiscovery(args[0]);
+    }
+  });
+  handle(IPC_CHANNELS.aiTestDraftConnection, getWindow, (_event, ...args) => {
+    try {
+      return ai.testDraftConnection(validateAiDraftArguments(args));
+    } catch {
+      return invalidAiConnection(args[0]);
+    }
+  });
+  handle(IPC_CHANNELS.aiSaveConfiguration, getWindow, (_event, ...args) => {
+    try {
+      return settings.saveConfiguration(validateAiDraftArguments(args));
+    } catch {
+      return invalidAiConfiguration();
+    }
+  });
 
   handle(IPC_CHANNELS.reviewGetOverview, getWindow, (_event, noteId) =>
     coach.getOverview(noteId),

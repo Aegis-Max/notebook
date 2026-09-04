@@ -12,6 +12,10 @@ import {
 } from '@playwright/test';
 
 const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
+const builtInExample = {
+  id: 'builtin-example:codex-workshop:v1',
+  title: 'Codex 工作坊：从基础使用到插件、技能与自动化',
+};
 const temporaryDirectories: string[] = [];
 let application: ElectronApplication | null = null;
 
@@ -53,6 +57,64 @@ test.afterEach(async () => {
   );
 });
 
+test('全新 Electron 数据目录内置一份经典示例，删除后重启不复活', async () => {
+  const userData = await createUserData();
+  let launched = await launch(userData);
+  await expect(launched.page.getByTestId('note-title')).toHaveValue(builtInExample.title);
+  await expect(launched.page.getByTestId('cues-input')).not.toHaveValue('');
+  await expect(launched.page.getByTestId('notes-input')).not.toHaveValue('');
+  await expect(launched.page.getByTestId('summary-input')).not.toHaveValue('');
+  let loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.error).toBeNull();
+  expect(loaded.notes).toHaveLength(1);
+  expect(loaded.notes[0]).toMatchObject(builtInExample);
+
+  await closeApplication();
+  launched = await launch(userData);
+  loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes).toHaveLength(1);
+  expect(loaded.notes[0]).toMatchObject(builtInExample);
+
+  await launched.page.getByTestId('delete-note-button').click();
+  await launched.page.getByTestId('delete-confirm-button').click();
+  await expect(launched.page.getByTestId('note-title')).toHaveValue('');
+  loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes).toHaveLength(1);
+  expect(loaded.notes[0].id).not.toBe(builtInExample.id);
+  expect(loaded.notes[0].title).toBe('');
+  const blankNoteId = loaded.notes[0].id;
+
+  await closeApplication();
+  launched = await launch(userData);
+  await expect(launched.page.getByTestId('note-title')).toHaveValue('');
+  loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes).toHaveLength(1);
+  expect(loaded.notes[0]).toMatchObject({ id: blankNoteId, title: '' });
+  expect(loaded.notes.some((note) => note.id === builtInExample.id)).toBe(false);
+});
+
+test('已有合法 Electron 空库时不播种内置示例', async () => {
+  const userData = await createUserData();
+  await writeFile(
+    join(userData, 'cornell-data.json'),
+    JSON.stringify({
+      schemaVersion: 2,
+      notes: [],
+      review: { sessions: [], cards: [], attempts: [] },
+    }),
+    'utf8',
+  );
+
+  const { page } = await launch(userData);
+  await expect(page.getByTestId('note-title')).toHaveValue('');
+  await expect(page.getByTestId('note-item')).toHaveCount(1);
+  const loaded = await page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.error).toBeNull();
+  expect(loaded.notes).toHaveLength(1);
+  expect(loaded.notes[0].id).not.toBe(builtInExample.id);
+  expect(loaded.notes[0].title).toBe('');
+});
+
 test('安全 preload 白名单可用，笔记跨 Electron 重启持久化', async () => {
   const userData = await createUserData();
   let launched = await launch(userData);
@@ -63,6 +125,7 @@ test('安全 preload 白名单可用，笔记跨 Electron 重启持久化', asyn
       isDesktop: api?.isDesktop,
       topLevelKeys: api ? Object.keys(api).sort() : [],
       noteKeys: api ? Object.keys(api.notes).sort() : [],
+      aiKeys: api ? Object.keys(api.ai).sort() : [],
       hasRequire: typeof (window as unknown as { require?: unknown }).require,
       hasProcess: typeof (window as unknown as { process?: unknown }).process,
       opened: window.open('https://example.com') !== null,
@@ -73,6 +136,16 @@ test('安全 preload 白名单可用，笔记跨 Electron 重启持久化', asyn
     isDesktop: true,
     topLevelKeys: ['ai', 'isDesktop', 'notes', 'platform', 'review'],
     noteKeys: ['exportBackup', 'importBackup', 'load', 'print', 'save'],
+    aiKeys: [
+      'deleteCloudCredential',
+      'discoverModels',
+      'getSettings',
+      'saveConfiguration',
+      'saveSettings',
+      'setCloudCredential',
+      'testConnection',
+      'testDraftConnection',
+    ],
     hasRequire: 'undefined',
     hasProcess: 'undefined',
     opened: false,
@@ -318,4 +391,71 @@ test('真实界面完成内化复习，并在重启后显示可继续会话与�
   await launched.page.getByTestId('study-button').click();
   await expect(launched.page.getByRole('button', { name: /继续上次复习/ })).toBeVisible();
   await expect(launched.page.locator('.review-card-list li')).toHaveCount(1);
+});
+
+test('应用级 AI 设置支持草稿检测、测试、显式保存和快捷键焦点恢复', async () => {
+  const userData = await createUserData();
+  let launched = await launch(userData);
+  let page = launched.page;
+  const consoleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+
+  await page.getByTestId('app-ai-settings-button').click();
+  await expect(page.getByTestId('ai-settings-dialog')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'AI 设置' })).toBeFocused();
+
+  await page.getByText('云端模型', { exact: true }).click();
+  await page.getByText('DeepSeek', { exact: true }).click();
+  await page.getByTestId('ai-api-key').fill('sk-electron-draft');
+  await expect(page.getByTestId('ai-api-key')).toHaveAttribute('type', 'password');
+  await page.getByTestId('ai-api-key-visibility').click();
+  await expect(page.getByTestId('ai-api-key')).toHaveAttribute('type', 'text');
+
+  await page.getByTestId('ai-discover-models').click();
+  await expect(page.getByTestId('ai-model-list')).toBeVisible();
+  await page.getByTestId('ai-test-connection').click();
+  await expect(page.getByTestId('ai-settings-notice')).toContainText('本次测试未保存设置');
+
+  const beforeSave = await page.evaluate(() => window.cornellDesktop!.ai.getSettings());
+  expect(beforeSave).toMatchObject({
+    provider: 'ollama',
+    cloudBaseUrl: 'https://api.openai.com/v1',
+    cloudCredentialConfigured: false,
+  });
+
+  await page.getByTestId('ai-settings-save').click();
+  await expect(page.getByTestId('ai-settings-notice')).toContainText('AI 设置已安全保存');
+  const afterSave = await page.evaluate(() => window.cornellDesktop!.ai.getSettings());
+  expect(afterSave).toMatchObject({
+    provider: 'cloud',
+    cloudBaseUrl: 'https://api.deepseek.com',
+    cloudModel: 'deepseek-chat',
+    cloudCredentialConfigured: true,
+  });
+
+  await page.getByRole('button', { name: '返回' }).click();
+  await expect(page.getByTestId('ai-settings-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('app-ai-settings-button')).toBeFocused();
+
+  await page.getByTestId('note-title').focus();
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+,' : 'Control+,');
+  await expect(page.getByTestId('ai-settings-dialog')).toBeVisible();
+  await page.getByRole('button', { name: '返回' }).click();
+  await expect(page.getByTestId('note-title')).toBeFocused();
+  expect(consoleErrors).toEqual([]);
+
+  await closeApplication();
+  launched = await launch(userData);
+  page = launched.page;
+  const persisted = await page.evaluate(() => window.cornellDesktop!.ai.getSettings());
+  expect(persisted).toMatchObject({
+    provider: 'cloud',
+    cloudBaseUrl: 'https://api.deepseek.com',
+    cloudModel: 'deepseek-chat',
+    cloudCredentialConfigured: true,
+  });
+  expect(await readFile(join(userData, 'ai-settings.json'), 'utf8'))
+    .not.toContain('sk-electron-draft');
 });

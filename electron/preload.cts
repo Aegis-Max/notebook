@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type {
+  AiDraftConfiguration,
   AiSettings,
   Confidence,
   DesktopApi,
@@ -19,6 +20,9 @@ const IPC_CHANNELS = {
   aiSetCloudCredential: 'cornell:ai:set-cloud-credential',
   aiDeleteCloudCredential: 'cornell:ai:delete-cloud-credential',
   aiTestConnection: 'cornell:ai:test-connection',
+  aiDiscoverModels: 'cornell:ai:discover-models',
+  aiTestDraftConnection: 'cornell:ai:test-draft-connection',
+  aiSaveConfiguration: 'cornell:ai:save-configuration',
   reviewGetOverview: 'cornell:review:get-overview',
   reviewStartRecall: 'cornell:review:start-recall',
   reviewStartDue: 'cornell:review:start-due',
@@ -57,6 +61,12 @@ const desktopApi: DesktopApi = Object.freeze({
       invoke(IPC_CHANNELS.aiSetCloudCredential, secret),
     deleteCloudCredential: () => invoke(IPC_CHANNELS.aiDeleteCloudCredential),
     testConnection: () => invoke(IPC_CHANNELS.aiTestConnection),
+    discoverModels: (draft: AiDraftConfiguration) =>
+      invoke(IPC_CHANNELS.aiDiscoverModels, draft),
+    testDraftConnection: (draft: AiDraftConfiguration) =>
+      invoke(IPC_CHANNELS.aiTestDraftConnection, draft),
+    saveConfiguration: (draft: AiDraftConfiguration) =>
+      invoke(IPC_CHANNELS.aiSaveConfiguration, draft),
   }),
   review: Object.freeze({
     getOverview: (noteId?: string) =>

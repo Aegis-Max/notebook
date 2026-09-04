@@ -1,4 +1,8 @@
-import { describe, expect, test, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('electron', () => ({
   safeStorage: {
@@ -8,8 +12,48 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { normalizeAiSettings } from '../electron/secure-settings.js';
+import { safeStorage } from 'electron';
+
+import {
+  normalizeAiDraftConfiguration,
+  normalizeAiSettings,
+  SecureSettingsService,
+} from '../electron/secure-settings.js';
 import type { AiSettings } from '../src/types/desktop.js';
+
+const temporaryDirectories: string[] = [];
+const decryptedByCiphertext = new Map<string, string>();
+
+async function temporaryDataDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'cornell-settings-test-'));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+beforeEach(() => {
+  decryptedByCiphertext.clear();
+  vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockReset();
+  vi.mocked(safeStorage.encryptStringAsync).mockReset();
+  vi.mocked(safeStorage.decryptStringAsync).mockReset();
+  vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
+  vi.mocked(safeStorage.encryptStringAsync).mockImplementation(async (secret) => {
+    const ciphertext = `ciphertext-${decryptedByCiphertext.size + 1}`;
+    decryptedByCiphertext.set(ciphertext, secret);
+    return Buffer.from(ciphertext, 'utf8');
+  });
+  vi.mocked(safeStorage.decryptStringAsync).mockImplementation(async (encrypted) => ({
+    result: decryptedByCiphertext.get(encrypted.toString('utf8')) ?? '',
+    shouldReEncrypt: false,
+  }));
+});
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  );
+});
 
 function settings(overrides: Partial<AiSettings> = {}): AiSettings {
   return {
@@ -77,5 +121,170 @@ describe('AI 服务地址规范化', () => {
     expect(() => normalizeAiSettings(settings({ cloudBaseUrl }))).toThrowError(
       expect.objectContaining({ code: 'INVALID_AI_URL' }),
     );
+  });
+});
+
+describe('AI 草稿与密钥安全存储', () => {
+  test('草稿会规范化地址和密钥，且拒绝同时替换与清除密钥', () => {
+    expect(
+      normalizeAiDraftConfiguration({
+        settings: settings({
+          cloudBaseUrl: ' https://API.DEEPSEEK.COM/v1/// ',
+        }),
+        cloudCredential: '  sk-draft  ',
+      }),
+    ).toMatchObject({
+      settings: { cloudBaseUrl: 'https://api.deepseek.com/v1' },
+      cloudCredential: 'sk-draft',
+    });
+
+    expect(() =>
+      normalizeAiDraftConfiguration({
+        settings: settings(),
+        cloudCredential: 'sk-new',
+        clearCloudCredential: true,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_AI_DRAFT' }));
+  });
+
+  test('密钥只对绑定的规范化 base URL 可用，且不会进入设置视图或磁盘明文', async () => {
+    const directory = await temporaryDataDirectory();
+    const service = new SecureSettingsService(directory);
+    const secret = 'sk-private-never-persist-plaintext';
+
+    const saved = await service.saveConfiguration({
+      settings: settings({ cloudBaseUrl: 'https://api.openai.com/v1/' }),
+      cloudCredential: `  ${secret}  `,
+    });
+
+    expect(saved).toMatchObject({
+      ok: true,
+      error: null,
+      errorCode: null,
+      settings: { cloudCredentialConfigured: true },
+    });
+    expect(JSON.stringify(saved)).not.toContain(secret);
+    expect(JSON.stringify(await service.getSettings())).not.toContain(secret);
+    expect(await readFile(join(directory, 'ai-settings.json'), 'utf8')).not.toContain(
+      secret,
+    );
+
+    expect(
+      await service.getCloudCredentialForBaseUrl(
+        ' https://API.OPENAI.COM/v1/// ',
+        { allowReEncrypt: false },
+      ),
+    ).toBe(secret);
+    vi.mocked(safeStorage.decryptStringAsync).mockClear();
+    expect(
+      await service.getCloudCredentialForBaseUrl('https://api.deepseek.com/v1'),
+    ).toBeNull();
+    expect(safeStorage.decryptStringAsync).not.toHaveBeenCalled();
+    expect(
+      await service.getCloudCredentialForBaseUrl('https://api.openai.com'),
+    ).toBeNull();
+    expect(safeStorage.decryptStringAsync).not.toHaveBeenCalled();
+  });
+
+  test('草稿读取禁用密钥轮换时不改写设置文件', async () => {
+    const directory = await temporaryDataDirectory();
+    const service = new SecureSettingsService(directory);
+    const secret = 'sk-read-only-draft';
+    await service.saveConfiguration({
+      settings: settings(),
+      cloudCredential: secret,
+    });
+    const filePath = join(directory, 'ai-settings.json');
+    const before = await readFile(filePath, 'utf8');
+    vi.mocked(safeStorage.decryptStringAsync).mockResolvedValue({
+      result: secret,
+      shouldReEncrypt: true,
+    });
+
+    await expect(
+      service.getCloudCredentialForBaseUrl('https://api.openai.com/v1', {
+        allowReEncrypt: false,
+      }),
+    ).resolves.toBe(secret);
+
+    expect(safeStorage.encryptStringAsync).toHaveBeenCalledTimes(1);
+    expect(await readFile(filePath, 'utf8')).toBe(before);
+  });
+
+  test('原子保存按同 URL 保留、显式替换、换 URL 失效和显式清除处理密钥', async () => {
+    const directory = await temporaryDataDirectory();
+    const service = new SecureSettingsService(directory);
+    await service.saveConfiguration({
+      settings: settings(),
+      cloudCredential: 'sk-first',
+    });
+
+    const preserved = await service.saveConfiguration({
+      settings: settings({ cloudModel: 'gpt-next' }),
+    });
+    expect(preserved.settings).toMatchObject({
+      cloudModel: 'gpt-next',
+      cloudCredentialConfigured: true,
+    });
+    await expect(service.getCloudCredential()).resolves.toBe('sk-first');
+
+    const replaced = await service.saveConfiguration({
+      settings: settings({ cloudModel: 'gpt-next' }),
+      cloudCredential: 'sk-second',
+    });
+    expect(replaced.settings?.cloudCredentialConfigured).toBe(true);
+    await expect(service.getCloudCredential()).resolves.toBe('sk-second');
+
+    const invalidated = await service.saveConfiguration({
+      settings: settings({
+        cloudBaseUrl: 'https://api.deepseek.com/v1',
+        cloudModel: 'deepseek-chat',
+      }),
+    });
+    expect(invalidated.settings?.cloudCredentialConfigured).toBe(false);
+    await expect(service.getCloudCredential()).resolves.toBeNull();
+
+    await service.saveConfiguration({
+      settings: settings({
+        cloudBaseUrl: 'https://api.deepseek.com/v1',
+        cloudModel: 'deepseek-chat',
+      }),
+      cloudCredential: 'sk-deepseek',
+    });
+    const cleared = await service.saveConfiguration({
+      settings: settings({
+        cloudBaseUrl: 'https://api.deepseek.com/v1',
+        cloudModel: 'deepseek-chat',
+      }),
+      clearCloudCredential: true,
+    });
+    expect(cleared.settings?.cloudCredentialConfigured).toBe(false);
+    await expect(service.getCloudCredential()).resolves.toBeNull();
+  });
+
+  test('新密钥无法安全加密时不修改原设置，且错误结果不回显密钥', async () => {
+    const directory = await temporaryDataDirectory();
+    const service = new SecureSettingsService(directory);
+    const original = await service.getSettings();
+    const secret = 'sk-must-not-leak';
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValue(
+      new Error(`底层错误不应回显 ${secret}`),
+    );
+
+    const result = await service.saveConfiguration({
+      settings: settings({
+        cloudBaseUrl: 'https://api.deepseek.com/v1',
+        cloudModel: 'deepseek-chat',
+      }),
+      cloudCredential: secret,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'SAVE_FAILED',
+      settings: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(await service.getSettings()).toEqual(original);
   });
 });

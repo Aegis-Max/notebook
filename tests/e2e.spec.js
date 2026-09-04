@@ -24,6 +24,10 @@ const selectors = {
 };
 
 const savedStatusPattern = /已保存|保存成功|保存于|saved/i;
+const builtInExample = {
+  id: 'builtin-example:codex-workshop:v1',
+  title: 'Codex 工作坊：从基础使用到插件、技能与自动化',
+};
 
 function makeToken(label) {
   return `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -177,6 +181,61 @@ async function tabUntilFocused(page, selector, maximumTabs = 20) {
 
   throw new Error(`${selector} 无法通过 ${maximumTabs} 次 Tab 聚焦`);
 }
+
+test('全新浏览器存储内置一份经典示例，删除后刷新不复活', async ({ page }) => {
+  await openApp(page);
+  await expectEditorReady(page);
+  await expect(page.locator(selectors.title)).toHaveValue(builtInExample.title);
+  await expect(page.locator(selectors.cues)).not.toHaveValue('');
+  await expect(page.locator(selectors.notes)).not.toHaveValue('');
+  await expect(page.locator(selectors.summary)).not.toHaveValue('');
+  await ensureNoteListOpen(page);
+
+  const exampleItem = page.locator(
+    `${selectors.noteItem}[data-note-id="${builtInExample.id}"]`,
+  );
+  await expect(page.locator(selectors.noteItem)).toHaveCount(1);
+  await expect(exampleItem).toHaveCount(1);
+
+  await page.reload();
+  await expect(page.locator(selectors.title)).toHaveValue(builtInExample.title);
+  await ensureNoteListOpen(page);
+  await expect(page.locator(selectors.noteItem)).toHaveCount(1);
+  await expect(exampleItem).toHaveCount(1);
+
+  const deleteButton = await openUtilityAction(page, selectors.deleteNote);
+  await deleteButton.click();
+  await page.locator('#delete-confirm-button').click();
+  await expect(page.locator(selectors.title)).toHaveValue('');
+  await ensureNoteListOpen(page);
+  await expect(exampleItem).toHaveCount(0);
+  await expect(page.locator(selectors.noteItem)).toHaveCount(1);
+  const blankNoteId = await page.locator(selectors.noteItem).getAttribute('data-note-id');
+  expect(blankNoteId).toBeTruthy();
+  expect(blankNoteId).not.toBe(builtInExample.id);
+
+  await page.reload();
+  await expect(page.locator(selectors.title)).toHaveValue('');
+  await ensureNoteListOpen(page);
+  await expect(exampleItem).toHaveCount(0);
+  await expect(page.locator(selectors.noteItem)).toHaveCount(1);
+  await expect(page.locator(selectors.noteItem)).toHaveAttribute('data-note-id', blankNoteId);
+});
+
+test('已有合法空库时不播种内置示例', async ({ page }) => {
+  await page.addInitScript(({ key }) => {
+    localStorage.setItem(key, JSON.stringify({ schemaVersion: 1, notes: [] }));
+  }, { key: 'cornell-notes:v1' });
+
+  await openApp(page);
+  await expectEditorReady(page);
+  await expect(page.locator(selectors.title)).toHaveValue('');
+  await ensureNoteListOpen(page);
+  await expect(
+    page.locator(`${selectors.noteItem}[data-note-id="${builtInExample.id}"]`),
+  ).toHaveCount(0);
+  await expect(page.locator(selectors.noteItem)).toHaveCount(1);
+});
 
 test('首页完整加载，核心控件可用且控制台健康', async ({ page }) => {
   await openApp(page);

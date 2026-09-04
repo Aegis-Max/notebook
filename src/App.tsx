@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { ReviewCoach } from './components/ReviewCoach.js';
+import { createBuiltinExampleNote } from './domain/builtin-example.js';
 import {
   createNote,
   searchNotes,
@@ -81,6 +82,7 @@ export default function App() {
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Note | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewEntry, setReviewEntry] = useState<'home' | 'settings'>('home');
   const [closedBook, setClosedBook] = useState(false);
   const [reviewDueCount, setReviewDueCount] = useState(0);
 
@@ -168,7 +170,11 @@ export default function App() {
       let loadedNotes = result.notes;
 
       if (loadedNotes.length === 0) {
-        loadedNotes = [createNote({ date: today() })];
+        loadedNotes = [
+          result.isFirstRun === true
+            ? createBuiltinExampleNote()
+            : createNote({ date: today() }),
+        ];
         if (result.error) {
           setSaveState('error');
         } else {
@@ -464,8 +470,39 @@ export default function App() {
       : studyButtonRef.current;
     closeUtilityMenu();
     closeMobileList();
+    setReviewEntry('home');
     setReviewOpen(true);
   };
+
+  const openAiSettings = useCallback(() => {
+    reviewTriggerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : utilityToggleRef.current;
+    closeUtilityMenu();
+    closeMobileList();
+    setReviewEntry('settings');
+    setReviewOpen(true);
+  }, [closeMobileList, closeUtilityMenu]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const openSettingsFromShortcut = (event: KeyboardEvent) => {
+      if (
+        reviewOpen
+        || deleteDialogRef.current?.open
+        || event.key !== ','
+        || (!event.metaKey && !event.ctrlKey)
+        || event.altKey
+        || event.shiftKey
+      ) {
+        return;
+      }
+      event.preventDefault();
+      openAiSettings();
+    };
+    window.addEventListener('keydown', openSettingsFromShortcut);
+    return () => window.removeEventListener('keydown', openSettingsFromShortcut);
+  }, [openAiSettings, reviewOpen]);
 
   const closeReview = () => {
     setReviewOpen(false);
@@ -545,6 +582,12 @@ export default function App() {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-4a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v4a2 2 0 0 1-2 2h-2m-10-4h10v8H7v-8Z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
               <span>打印</span>
             </button>
+            {isDesktopRuntime() ? (
+              <button className="tool-button" data-testid="app-ai-settings-button" type="button" onClick={openAiSettings}>
+                <span>AI 设置</span>
+                <kbd aria-hidden="true">⌘,</kbd>
+              </button>
+            ) : null}
             <button className="tool-button delete-note-button" id="delete-note-button" data-testid="delete-note-button" type="button" title="删除当前笔记" onClick={() => void askToDeleteNote()}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
               <span>删除</span>
@@ -733,6 +776,7 @@ export default function App() {
       {currentNote ? (
         <ReviewCoach
           open={reviewOpen}
+          initialStage={reviewEntry}
           note={currentNote}
           summary={currentNote.summary}
           dueCount={reviewDueCount}

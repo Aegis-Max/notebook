@@ -35,6 +35,8 @@ export type NoteStoreErrorCode =
 export interface LoadNotesResult {
   notes: Note[];
   error: NoteStoreError | null;
+  /** 仅表示存储键从未建立，不表示已存储的笔记集合为空。 */
+  isFirstRun: boolean;
 }
 
 export interface SaveNotesResult {
@@ -407,6 +409,7 @@ export function loadNotes(storage?: StorageLike | unknown): LoadNotesResult {
         error instanceof NoteStoreError
           ? error
           : new NoteStoreError('STORAGE_UNAVAILABLE', '本地存储不可用', error),
+      isFirstRun: false,
     };
   }
 
@@ -417,16 +420,21 @@ export function loadNotes(storage?: StorageLike | unknown): LoadNotesResult {
     return {
       notes: [],
       error: new NoteStoreError('STORAGE_READ_FAILED', '读取本地笔记失败', error),
+      isFirstRun: false,
     };
   }
 
   if (serialized === null || serialized === undefined) {
-    return { notes: [], error: null };
+    return { notes: [], error: null, isFirstRun: true };
   }
 
   try {
     const payload: unknown = JSON.parse(serialized);
-    return { notes: sortNormalizedNotes(parseStoredPayload(payload)), error: null };
+    return {
+      notes: sortNormalizedNotes(parseStoredPayload(payload)),
+      error: null,
+      isFirstRun: false,
+    };
   } catch (error) {
     return {
       notes: [],
@@ -434,6 +442,7 @@ export function loadNotes(storage?: StorageLike | unknown): LoadNotesResult {
         error instanceof NoteStoreError
           ? error
           : new NoteStoreError('INVALID_STORED_DATA', '本地笔记数据已损坏', error),
+      isFirstRun: false,
     };
   }
 }

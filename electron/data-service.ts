@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { mergeNotes, parseBackup, sortNotes, type Note } from '../src/domain/note-store.js';
@@ -12,14 +13,16 @@ import {
   type DesktopDatabase,
   type StoredReviewSession,
 } from './data-model.js';
-import { DesktopError } from './errors.js';
+import { DesktopError, isNodeError } from './errors.js';
 
 export class DesktopDataService {
   private readonly store: AtomicJsonStore<DesktopDatabase>;
+  private readonly dataFilePath: string;
 
   constructor(userDataPath: string) {
+    this.dataFilePath = join(userDataPath, 'cornell-data.json');
     this.store = new AtomicJsonStore(
-      join(userDataPath, 'cornell-data.json'),
+      this.dataFilePath,
       emptyDesktopDatabase,
       parseDesktopDatabase,
     );
@@ -27,6 +30,23 @@ export class DesktopDataService {
 
   async read(): Promise<DesktopDatabase> {
     return this.store.read();
+  }
+
+  async loadNotes(): Promise<{ notes: Note[]; isFirstRun: boolean }> {
+    let isFirstRun = false;
+    try {
+      await stat(this.dataFilePath);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== 'ENOENT') {
+        throw new DesktopError('DATA_READ_FAILED', '无法检查桌面版数据', {
+          cause: error,
+        });
+      }
+      isFirstRun = true;
+    }
+
+    const database = await this.store.read();
+    return { notes: database.notes, isFirstRun };
   }
 
   async update(

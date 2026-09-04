@@ -14,6 +14,8 @@ export interface SaveResult {
 export interface LoadNotesResult {
   notes: Note[];
   error: string | null;
+  /** 仅表示持久化载体尚未建立，不表示已存储的笔记集合为空。 */
+  isFirstRun: boolean;
 }
 
 export interface ImportResult extends SaveResult {
@@ -42,9 +44,53 @@ export interface AiSettingsView extends AiSettings {
   secureStorageAvailable: boolean;
 }
 
+export type AiOperationErrorCode =
+  | 'INVALID_SETTINGS'
+  | 'CREDENTIAL_REQUIRED'
+  | 'SECURE_STORAGE_UNAVAILABLE'
+  | 'AUTHENTICATION_FAILED'
+  | 'ACCESS_DENIED'
+  | 'MODEL_NOT_FOUND'
+  | 'ENDPOINT_NOT_FOUND'
+  | 'RATE_LIMITED'
+  | 'SERVICE_UNAVAILABLE'
+  | 'TIMEOUT'
+  | 'NETWORK_ERROR'
+  | 'INVALID_RESPONSE'
+  | 'REQUEST_REJECTED'
+  | 'SAVE_FAILED';
+
+/**
+ * 设置界面的未保存草稿。cloudCredential 只在这一次 IPC 调用期间使用，
+ * 不会随发现/测试操作落盘，也绝不会出现在返回值中。
+ */
+export interface AiDraftConfiguration {
+  settings: AiSettings;
+  cloudCredential?: string;
+  clearCloudCredential?: boolean;
+}
+
+export interface AiModelInfo {
+  id: string;
+  label: string;
+}
+
+export interface AiModelDiscoveryResult extends SaveResult {
+  errorCode: AiOperationErrorCode | null;
+  provider: AiProviderKind;
+  models: AiModelInfo[];
+}
+
 export interface AiConnectionResult extends SaveResult {
+  errorCode: AiOperationErrorCode | null;
   provider: AiProviderKind;
   model: string;
+  latencyMs: number | null;
+}
+
+export interface AiConfigurationSaveResult extends SaveResult {
+  errorCode: AiOperationErrorCode | null;
+  settings: AiSettingsView | null;
 }
 
 export interface EvidenceView {
@@ -153,6 +199,11 @@ export interface DesktopApi {
     setCloudCredential(secret: string): Promise<SaveResult>;
     deleteCloudCredential(): Promise<SaveResult>;
     testConnection(): Promise<AiConnectionResult>;
+    discoverModels(draft: AiDraftConfiguration): Promise<AiModelDiscoveryResult>;
+    testDraftConnection(draft: AiDraftConfiguration): Promise<AiConnectionResult>;
+    saveConfiguration(
+      draft: AiDraftConfiguration,
+    ): Promise<AiConfigurationSaveResult>;
   };
   review: {
     getOverview(noteId?: string): Promise<ReviewOverviewView>;

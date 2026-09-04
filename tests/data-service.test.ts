@@ -90,6 +90,24 @@ describe('旧版网页备份兼容', () => {
   });
 });
 
+describe('首次存储识别', () => {
+  test('数据文件不存在时为首次使用，合法空库落盘后不再是首次', async () => {
+    const service = await createService();
+
+    await expect(service.loadNotes()).resolves.toEqual({
+      notes: [],
+      isFirstRun: true,
+    });
+
+    await service.saveNotes([]);
+
+    await expect(service.loadNotes()).resolves.toEqual({
+      notes: [],
+      isFirstRun: false,
+    });
+  });
+});
+
 describe('笔记生命周期与复习隐私', () => {
   test('更新时保留已完成历史并标记旧卡，删除时级联移除全部正文快照', async () => {
     const service = await createService();

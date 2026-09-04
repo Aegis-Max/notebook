@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Note } from '../domain/note-store.js';
 import { getDesktopApi } from '../platform/renderer-platform.js';
+import { AiSettingsPanel } from './AiSettingsPanel.js';
 import type {
-  AiSettings,
   AiSettingsView,
   Confidence,
   EvidenceView,
@@ -228,6 +228,7 @@ function FeynmanFeedback({ feedback }: { feedback: FeynmanFeedbackView }) {
 
 interface ReviewCoachProps {
   open: boolean;
+  initialStage?: 'home' | 'settings';
   note: Note;
   summary: string;
   dueCount: number;
@@ -240,6 +241,7 @@ interface ReviewCoachProps {
 
 export function ReviewCoach({
   open,
+  initialStage = 'home',
   note,
   summary,
   dueCount,
@@ -252,8 +254,7 @@ export function ReviewCoach({
   const [stage, setStage] = useState<ReviewStage>('home');
   const [overview, setOverview] = useState<ReviewOverviewView | null>(null);
   const [settings, setSettings] = useState<AiSettingsView>(DEFAULT_SETTINGS);
-  const [settingsDraft, setSettingsDraft] = useState<AiSettings>(DEFAULT_SETTINGS);
-  const [credential, setCredential] = useState('');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [summaryUnavailable, setSummaryUnavailable] = useState(false);
   const [questionCount, setQuestionCount] = useState(3);
@@ -282,27 +283,36 @@ export function ReviewCoach({
     if (!open) return;
 
     let cancelled = false;
-    setStage('home');
+    setStage(initialStage);
     setSession(null);
     setPrivacyAccepted(false);
     setSummaryUnavailable(false);
     setError('');
+    setSettingsLoaded(false);
     setFeynmanConcept(note.title.trim());
 
     const currentApi = getDesktopApi();
     if (!currentApi) return;
 
     setBusy(true);
-    void Promise.all([currentApi.review.getOverview(note.id), currentApi.ai.getSettings()])
-      .then(([nextOverview, nextSettings]) => {
+    void Promise.allSettled([currentApi.review.getOverview(note.id), currentApi.ai.getSettings()])
+      .then(([overviewResult, settingsResult]) => {
         if (cancelled) return;
-        setOverview(nextOverview);
-        setSettings(nextSettings);
-        setSettingsDraft(nextSettings);
-        onDueCountChange(nextOverview.dueCount);
-      })
-      .catch((loadError) => {
-        if (!cancelled) setError(toMessage(loadError, '无法读取复习数据。'));
+
+        if (overviewResult.status === 'fulfilled') {
+          setOverview(overviewResult.value);
+          onDueCountChange(overviewResult.value.dueCount);
+        }
+        if (settingsResult.status === 'fulfilled') {
+          setSettings(settingsResult.value);
+        }
+        setSettingsLoaded(true);
+
+        if (settingsResult.status === 'rejected') {
+          setError(toMessage(settingsResult.reason, '无法读取 AI 设置。'));
+        } else if (overviewResult.status === 'rejected' && initialStage !== 'settings') {
+          setError(toMessage(overviewResult.reason, '无法读取复习数据。'));
+        }
       })
       .finally(() => {
         if (!cancelled) setBusy(false);
@@ -311,7 +321,7 @@ export function ReviewCoach({
     return () => {
       cancelled = true;
     };
-  }, [note.id, note.title, onDueCountChange, open]);
+  }, [initialStage, note.id, note.title, onDueCountChange, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -465,70 +475,6 @@ export function ReviewCoach({
       setFeynmanFeedback(feedback);
     } catch (feynmanError) {
       setError(toMessage(feynmanError, '费曼讲解评估失败。'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveSettings = async () => {
-    const currentApi = getDesktopApi();
-    if (!currentApi) return;
-    setBusy(true);
-    setError('');
-    try {
-      await currentApi.ai.saveSettings(settingsDraft);
-      if (credential.trim()) {
-        const credentialResult = await currentApi.ai.setCloudCredential(credential.trim());
-        if (!credentialResult.ok) throw new Error(credentialResult.error ?? '密钥保存失败。');
-        setCredential('');
-      }
-      const nextSettings = await currentApi.ai.getSettings();
-      setSettings(nextSettings);
-      setSettingsDraft(nextSettings);
-      setStage('home');
-    } catch (settingsError) {
-      setError(toMessage(settingsError, 'AI 设置保存失败。'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deleteCredential = async () => {
-    const currentApi = getDesktopApi();
-    if (!currentApi) return;
-    setBusy(true);
-    setError('');
-    try {
-      const result = await currentApi.ai.deleteCloudCredential();
-      if (!result.ok) throw new Error(result.error ?? '密钥移除失败。');
-      const nextSettings = await currentApi.ai.getSettings();
-      setSettings(nextSettings);
-      setSettingsDraft(nextSettings);
-      setCredential('');
-    } catch (credentialError) {
-      setError(toMessage(credentialError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const testConnection = async () => {
-    const currentApi = getDesktopApi();
-    if (!currentApi) return;
-    setBusy(true);
-    setError('');
-    try {
-      await currentApi.ai.saveSettings(settingsDraft);
-      if (credential.trim()) {
-        const savedCredential = await currentApi.ai.setCloudCredential(credential.trim());
-        if (!savedCredential.ok) throw new Error(savedCredential.error ?? '密钥保存失败。');
-        setCredential('');
-      }
-      const result = await currentApi.ai.testConnection();
-      if (!result.ok) throw new Error(result.error ?? '连接测试失败。');
-      setError(`连接成功：${result.model}`);
-    } catch (connectionError) {
-      setError(toMessage(connectionError, '连接测试失败。'));
     } finally {
       setBusy(false);
     }
@@ -1039,127 +985,22 @@ export function ReviewCoach({
               )}
             </section>
           ) : (
-            <section className="ai-settings" data-testid="ai-settings-dialog">
-              <button className="review-back-button" type="button" onClick={() => setStage('home')}>返回</button>
-              <div className="provider-options" role="radiogroup" aria-label="AI 运行方式">
-                <button
-                  className={settingsDraft.provider === 'ollama' ? 'is-selected' : ''}
-                  data-testid="ai-provider-ollama"
-                  type="button"
-                  role="radio"
-                  aria-checked={settingsDraft.provider === 'ollama'}
-                  onClick={() => setSettingsDraft((current) => ({ ...current, provider: 'ollama' }))}
-                >
-                  <strong>本地模型</strong>
-                  <span>Ollama · 笔记不离开本机</span>
-                </button>
-                <button
-                  className={settingsDraft.provider === 'cloud' ? 'is-selected' : ''}
-                  data-testid="ai-provider-cloud"
-                  type="button"
-                  role="radio"
-                  aria-checked={settingsDraft.provider === 'cloud'}
-                  onClick={() => setSettingsDraft((current) => ({ ...current, provider: 'cloud' }))}
-                >
-                  <strong>云端模型</strong>
-                  <span>兼容 OpenAI API · 用户自备密钥</span>
-                </button>
-              </div>
-
-              {settingsDraft.provider === 'ollama' ? (
-                <div className="settings-fields">
-                  <label className="coach-field">
-                    <span>Ollama 地址</span>
-                    <input
-                      type="url"
-                      value={settingsDraft.ollamaBaseUrl}
-                      placeholder="http://127.0.0.1:11434"
-                      onChange={(event) => setSettingsDraft((current) => ({ ...current, ollamaBaseUrl: event.target.value }))}
-                    />
-                  </label>
-                  <label className="coach-field">
-                    <span>模型</span>
-                    <input
-                      data-testid="ai-model"
-                      type="text"
-                      value={settingsDraft.ollamaModel}
-                      placeholder="qwen3:8b"
-                      onChange={(event) => setSettingsDraft((current) => ({ ...current, ollamaModel: event.target.value }))}
-                    />
-                  </label>
-                </div>
-              ) : (
-                <div className="settings-fields">
-                  <label className="coach-field">
-                    <span>API 地址</span>
-                    <input
-                      type="url"
-                      value={settingsDraft.cloudBaseUrl}
-                      placeholder="https://api.openai.com/v1"
-                      onChange={(event) => setSettingsDraft((current) => ({ ...current, cloudBaseUrl: event.target.value }))}
-                    />
-                  </label>
-                  <label className="coach-field">
-                    <span>模型</span>
-                    <input
-                      data-testid="ai-model"
-                      type="text"
-                      value={settingsDraft.cloudModel}
-                      placeholder="gpt-5-mini"
-                      onChange={(event) => setSettingsDraft((current) => ({ ...current, cloudModel: event.target.value }))}
-                    />
-                  </label>
-                  <label className="coach-field">
-                    <span>API 密钥</span>
-                    <input
-                      data-testid="ai-api-key"
-                      type="password"
-                      value={credential}
-                      autoComplete="new-password"
-                      placeholder={settings.cloudCredentialConfigured ? '已保存在系统钥匙串中' : '输入后将保存到系统钥匙串'}
-                      onChange={(event) => setCredential(event.target.value)}
-                    />
-                  </label>
-                  <div className="credential-state">
-                    <span className={settings.cloudCredentialConfigured ? 'is-configured' : ''}>
-                      {settings.cloudCredentialConfigured ? '密钥已安全配置' : '尚未配置密钥'}
-                    </span>
-                    {settings.cloudCredentialConfigured ? (
-                      <button type="button" disabled={busy} onClick={() => void deleteCredential()}>移除密钥</button>
-                    ) : null}
-                  </div>
-                  {!settings.secureStorageAvailable ? (
-                    <p className="secure-storage-warning">当前系统安全存储不可用，云端密钥将无法保存；请优先使用 Ollama。</p>
-                  ) : null}
-                </div>
-              )}
-
-              <label className="consent-check is-muted">
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.supplementalKnowledge}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, supplementalKnowledge: event.target.checked }))}
-                />
-                <span>允许模型补充笔记之外的知识（将单独标记且不参与判分）</span>
-              </label>
-              <p className="settings-privacy-note">
-                密钥不会进入渲染进程日志、笔记备份或模型提示词；AI 永远不能直接修改笔记正文。
-              </p>
-              <div className="review-footer-actions">
-                <button className="secondary-button" type="button" disabled={busy} onClick={() => void testConnection()}>
-                  测试连接
-                </button>
-                <button
-                  className="review-primary-button is-compact"
-                  data-testid="ai-settings-save"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void saveSettings()}
-                >
-                  {busy ? '正在保存…' : '保存设置'}
-                </button>
-              </div>
-            </section>
+            <AiSettingsPanel
+              settings={settings}
+              loading={!settingsLoaded}
+              onBack={() => {
+                setError('');
+                if (initialStage === 'settings') {
+                  void closeReview();
+                } else {
+                  setStage('home');
+                }
+              }}
+              onSaved={(nextSettings) => {
+                setSettings(nextSettings);
+                setError('');
+              }}
+            />
           )}
         </div>
       </div>

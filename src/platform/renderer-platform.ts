@@ -7,12 +7,17 @@ import {
   sortNotes,
   type Note,
 } from '../domain/note-store.js';
-import type { DesktopApi, ImportResult, SaveResult } from '../types/desktop.js';
+import type {
+  DesktopApi,
+  ImportResult,
+  LoadNotesResult,
+  SaveResult,
+} from '../types/desktop.js';
 
 export interface RendererImportResult extends ImportResult {}
 
 export interface RendererNotesApi {
-  load(): Promise<{ notes: Note[]; error: string | null }>;
+  load(): Promise<LoadNotesResult>;
   save(notes: Note[]): Promise<SaveResult>;
   importBackup(currentNotes: Note[], file?: File): Promise<RendererImportResult>;
   exportBackup(notes: Note[]): Promise<{ ok: boolean; error: string | null; filePath: string | null }>;
@@ -33,11 +38,12 @@ function today(): string {
   return new Date(now.getTime() - offset).toISOString().slice(0, 10);
 }
 
-async function browserLoad(): Promise<{ notes: Note[]; error: string | null }> {
+async function browserLoad(): Promise<LoadNotesResult> {
   const result = loadNotes();
   return {
     notes: result.notes,
     error: result.error?.message ?? null,
+    isFirstRun: result.isFirstRun,
   };
 }
 

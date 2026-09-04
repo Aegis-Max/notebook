@@ -207,8 +207,23 @@ test('saveNotes 写入带版本的确定性数据，loadNotes 读回并排序', 
   assert.deepEqual(loaded.notes, saved.notes);
 });
 
-test('loadNotes 在首次使用且没有已保存数据时返回空集合', () => {
-  assert.deepEqual(loadNotes(new MemoryStorage()), { notes: [], error: null });
+test('loadNotes 仅在存储键不存在且读取成功时标记首次使用', () => {
+  const storage = new MemoryStorage();
+  assert.deepEqual(loadNotes(storage), {
+    notes: [],
+    error: null,
+    isFirstRun: true,
+  });
+
+  storage.values.set(
+    STORAGE_KEY,
+    JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: [] }),
+  );
+  assert.deepEqual(loadNotes(storage), {
+    notes: [],
+    error: null,
+    isFirstRun: false,
+  });
 });
 
 test('loadNotes 隔离损坏 JSON、错误 schema 和无效笔记', () => {
@@ -223,6 +238,7 @@ test('loadNotes 隔离损坏 JSON、错误 schema 和无效笔记', () => {
 
     assert.deepEqual(result.notes, []);
     assert.ok(result.error instanceof NoteStoreError);
+    assert.equal(result.isFirstRun, false);
   }
 });
 
@@ -236,9 +252,11 @@ test('loadNotes 捕获 Storage 读取异常与不可用对象', () => {
   assert.deepEqual(failed.notes, []);
   assert.equal(failed.error?.code, 'STORAGE_READ_FAILED');
   assert.equal(failed.error?.cause, thrown);
+  assert.equal(failed.isFirstRun, false);
 
   const unavailable = loadNotes({});
   assert.equal(unavailable.error?.code, 'STORAGE_UNAVAILABLE');
+  assert.equal(unavailable.isFirstRun, false);
 });
 
 test('默认 localStorage getter 抛错时读写接口都返回结构化失败', () => {
@@ -255,6 +273,7 @@ test('默认 localStorage getter 抛错时读写接口都返回结构化失败',
     const loaded = loadNotes();
     assert.deepEqual(loaded.notes, []);
     assert.equal(loaded.error?.code, 'STORAGE_UNAVAILABLE');
+    assert.equal(loaded.isFirstRun, false);
 
     const saved = saveNotes([makeNote()]);
     assert.equal(saved.ok, false);

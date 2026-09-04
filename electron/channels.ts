@@ -14,6 +14,9 @@ export const IPC_CHANNELS = {
   aiSetCloudCredential: 'cornell:ai:set-cloud-credential',
   aiDeleteCloudCredential: 'cornell:ai:delete-cloud-credential',
   aiTestConnection: 'cornell:ai:test-connection',
+  aiDiscoverModels: 'cornell:ai:discover-models',
+  aiTestDraftConnection: 'cornell:ai:test-draft-connection',
+  aiSaveConfiguration: 'cornell:ai:save-configuration',
   reviewGetOverview: 'cornell:review:get-overview',
   reviewStartRecall: 'cornell:review:start-recall',
   reviewStartDue: 'cornell:review:start-due',
@@ -26,4 +29,3 @@ export const IPC_CHANNELS = {
   reviewAbandon: 'cornell:review:abandon',
   reviewEvaluateFeynman: 'cornell:review:evaluate-feynman',
 } as const;
-

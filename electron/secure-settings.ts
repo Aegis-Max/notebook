@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { safeStorage } from 'electron';
 import { z } from 'zod';
 
-import type { AiSettings, AiSettingsView, SaveResult } from '../src/types/desktop.js';
+import type {
+  AiConfigurationSaveResult,
+  AiDraftConfiguration,
+  AiOperationErrorCode,
+  AiSettings,
+  AiSettingsView,
+  SaveResult,
+} from '../src/types/desktop.js';
 import { AtomicJsonStore } from './atomic-json-store.js';
 import { DesktopError, errorMessage } from './errors.js';
 
@@ -18,6 +25,14 @@ const rawAiSettingsSchema = z
     ollamaBaseUrl: z.string().min(1).max(2048),
     ollamaModel: z.string().trim().min(1).max(200),
     supplementalKnowledge: z.boolean(),
+  })
+  .strict();
+
+const aiDraftConfigurationSchema = z
+  .object({
+    settings: rawAiSettingsSchema,
+    cloudCredential: z.string().max(MAX_CREDENTIAL_LENGTH).optional(),
+    clearCloudCredential: z.boolean().optional(),
   })
   .strict();
 
@@ -93,6 +108,33 @@ export function normalizeAiSettings(candidate: unknown): AiSettings {
   };
 }
 
+export function normalizeAiDraftConfiguration(
+  candidate: unknown,
+): AiDraftConfiguration {
+  let parsed: z.infer<typeof aiDraftConfigurationSchema>;
+  try {
+    parsed = aiDraftConfigurationSchema.parse(candidate);
+  } catch (error) {
+    throw new DesktopError('INVALID_AI_DRAFT', 'AI 草稿配置格式无效', {
+      cause: error,
+    });
+  }
+
+  const cloudCredential = parsed.cloudCredential?.trim() || undefined;
+  if (parsed.clearCloudCredential && cloudCredential) {
+    throw new DesktopError(
+      'INVALID_AI_DRAFT',
+      '不能同时提交新密钥并要求清除密钥',
+    );
+  }
+
+  return {
+    settings: normalizeAiSettings(parsed.settings),
+    ...(cloudCredential ? { cloudCredential } : {}),
+    ...(parsed.clearCloudCredential ? { clearCloudCredential: true } : {}),
+  };
+}
+
 function parseSettingsFile(candidate: unknown): SettingsFile {
   const parsed = settingsFileSchema.parse(candidate);
   return {
@@ -121,13 +163,7 @@ export class SecureSettingsService {
 
   async getSettings(): Promise<AiSettingsView> {
     const file = await this.store.read();
-    return {
-      ...file.settings,
-      cloudCredentialConfigured:
-        file.encryptedCloudCredential !== null &&
-        file.cloudCredentialBaseUrl === file.settings.cloudBaseUrl,
-      secureStorageAvailable: await this.isSecureStorageAvailable(),
-    };
+    return this.toSettingsView(file);
   }
 
   async saveSettings(candidate: unknown): Promise<AiSettingsView> {
@@ -140,13 +176,60 @@ export class SecureSettingsService {
       }
       draft.settings = settings;
     });
-    return {
-      ...file.settings,
-      cloudCredentialConfigured:
-        file.encryptedCloudCredential !== null &&
-        file.cloudCredentialBaseUrl === file.settings.cloudBaseUrl,
-      secureStorageAvailable: await this.isSecureStorageAvailable(),
-    };
+    return this.toSettingsView(file);
+  }
+
+  /**
+   * 通过一次原子写入同时保存配置和可选密钥。发现/测试流程不会调用此方法。
+   */
+  async saveConfiguration(candidate: unknown): Promise<AiConfigurationSaveResult> {
+    try {
+      const draft = normalizeAiDraftConfiguration(candidate);
+      let encryptedCredential: string | undefined;
+      if (draft.cloudCredential) {
+        if (!(await this.isSecureStorageAvailable())) {
+          throw new DesktopError(
+            'SECURE_STORAGE_UNAVAILABLE',
+            '当前系统安全存储不可用，配置和密钥均未保存',
+          );
+        }
+        encryptedCredential = (
+          await safeStorage.encryptStringAsync(draft.cloudCredential)
+        ).toString('base64');
+      }
+
+      const file = await this.store.update((stored) => {
+        const baseUrlChanged =
+          stored.settings.cloudBaseUrl !== draft.settings.cloudBaseUrl;
+        stored.settings = draft.settings;
+
+        if (draft.clearCloudCredential) {
+          stored.encryptedCloudCredential = null;
+          stored.cloudCredentialBaseUrl = null;
+        } else if (encryptedCredential) {
+          stored.encryptedCloudCredential = encryptedCredential;
+          stored.cloudCredentialBaseUrl = draft.settings.cloudBaseUrl;
+        } else if (baseUrlChanged) {
+          // 已保存密钥只对绑定的 base URL 有效，地址改变时不能静默复用。
+          stored.encryptedCloudCredential = null;
+          stored.cloudCredentialBaseUrl = null;
+        }
+      });
+
+      return {
+        ok: true,
+        error: null,
+        errorCode: null,
+        settings: await this.toSettingsView(file),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: secureSettingsErrorMessage(error),
+        errorCode: secureSettingsErrorCode(error),
+        settings: null,
+      };
+    }
   }
 
   async setCloudCredential(candidate: unknown): Promise<SaveResult> {
@@ -188,9 +271,47 @@ export class SecureSettingsService {
   /** 仅供主进程 AI 客户端调用，永远不要经 IPC 返回。 */
   async getCloudCredential(): Promise<string | null> {
     const file = await this.store.read();
+    return this.decryptBoundCredential(file, file.settings.cloudBaseUrl, true);
+  }
+
+  /**
+   * 读取仅绑定到指定 base URL 的已存密钥。草稿发现/测试传 allowReEncrypt=false，
+   * 从而连密钥轮换维护写入也不会发生，保证操作严格只读。
+   */
+  async getCloudCredentialForBaseUrl(
+    baseUrlCandidate: unknown,
+    options: { allowReEncrypt?: boolean } = {},
+  ): Promise<string | null> {
+    if (
+      options === null ||
+      typeof options !== 'object' ||
+      Object.keys(options).some((key) => key !== 'allowReEncrypt') ||
+      (options.allowReEncrypt !== undefined &&
+        typeof options.allowReEncrypt !== 'boolean')
+    ) {
+      throw new DesktopError('INVALID_AI_DRAFT', '密钥读取选项无效');
+    }
+    if (typeof baseUrlCandidate !== 'string') {
+      throw new DesktopError('INVALID_AI_DRAFT', '云端 base URL 格式无效');
+    }
+    const baseUrl = normalizeBaseUrl(baseUrlCandidate, 'cloud');
+    const file = await this.store.read();
+    return this.decryptBoundCredential(
+      file,
+      baseUrl,
+      options.allowReEncrypt ?? false,
+    );
+  }
+
+  private async decryptBoundCredential(
+    file: SettingsFile,
+    baseUrl: string,
+    allowReEncrypt: boolean,
+  ): Promise<string | null> {
     if (
       !file.encryptedCloudCredential ||
-      file.cloudCredentialBaseUrl !== file.settings.cloudBaseUrl
+      file.cloudCredentialBaseUrl !== baseUrl ||
+      file.settings.cloudBaseUrl !== baseUrl
     ) {
       return null;
     }
@@ -204,10 +325,16 @@ export class SecureSettingsService {
     try {
       const encrypted = Buffer.from(file.encryptedCloudCredential, 'base64');
       const decrypted = await safeStorage.decryptStringAsync(encrypted);
-      if (decrypted.shouldReEncrypt) {
+      if (decrypted.shouldReEncrypt && allowReEncrypt) {
         const replacement = await safeStorage.encryptStringAsync(decrypted.result);
         await this.store.update((draft) => {
-          draft.encryptedCloudCredential = replacement.toString('base64');
+          // 不覆盖并发保存的新密钥或新绑定。
+          if (
+            draft.encryptedCloudCredential === file.encryptedCloudCredential &&
+            draft.cloudCredentialBaseUrl === baseUrl
+          ) {
+            draft.encryptedCloudCredential = replacement.toString('base64');
+          }
         });
       }
       return decrypted.result;
@@ -225,4 +352,41 @@ export class SecureSettingsService {
       return false;
     }
   }
+
+  private async toSettingsView(file: SettingsFile): Promise<AiSettingsView> {
+    return {
+      ...file.settings,
+      cloudCredentialConfigured:
+        file.encryptedCloudCredential !== null &&
+        file.cloudCredentialBaseUrl === file.settings.cloudBaseUrl,
+      secureStorageAvailable: await this.isSecureStorageAvailable(),
+    };
+  }
+}
+
+function secureSettingsErrorCode(error: unknown): AiOperationErrorCode {
+  if (error instanceof DesktopError) {
+    if (
+      error.code === 'INVALID_AI_DRAFT' ||
+      error.code === 'INVALID_AI_URL' ||
+      error.code === 'INSECURE_CLOUD_URL' ||
+      error.code === 'OLLAMA_NOT_LOOPBACK'
+    ) {
+      return 'INVALID_SETTINGS';
+    }
+    if (error.code === 'SECURE_STORAGE_UNAVAILABLE') {
+      return 'SECURE_STORAGE_UNAVAILABLE';
+    }
+  }
+  return 'SAVE_FAILED';
+}
+
+function secureSettingsErrorMessage(error: unknown): string {
+  const code = secureSettingsErrorCode(error);
+  if (code === 'INVALID_SETTINGS') return 'AI 草稿配置格式无效';
+  if (code === 'SECURE_STORAGE_UNAVAILABLE') {
+    return '当前系统安全存储不可用，配置和密钥均未保存';
+  }
+  // safeStorage 的底层错误理论上可能包含输入内容；保存接口一律使用固定文案。
+  return '保存 AI 配置失败';
 }
