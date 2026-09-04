@@ -20,6 +20,7 @@ const selectors = {
   title: '#note-title',
   utilityMenu: '[data-testid="utility-menu"]',
   utilityMenuToggle: '#utility-menu-toggle',
+  version: '#app-version',
 };
 
 const savedStatusPattern = /已保存|保存成功|保存于|saved/i;
@@ -73,6 +74,7 @@ async function expectEditorReady(page) {
     selectors.notes,
     selectors.summary,
     selectors.saveStatus,
+    selectors.version,
   ]) {
     await expect(page.locator(selector), `${selector} 应可见`).toBeVisible();
   }
@@ -179,6 +181,15 @@ async function tabUntilFocused(page, selector, maximumTabs = 20) {
 test('首页完整加载，核心控件可用且控制台健康', async ({ page }) => {
   await openApp(page);
   await expectEditorReady(page);
+  await expect(page.locator(selectors.version)).toHaveText('v1.0');
+
+  const [versionBox, saveStatusBox] = await Promise.all([
+    page.locator(selectors.version).boundingBox(),
+    page.locator(selectors.saveStatus).boundingBox(),
+  ]);
+  expect(versionBox).not.toBeNull();
+  expect(saveStatusBox).not.toBeNull();
+  expect(versionBox.x + versionBox.width).toBeLessThanOrEqual(saveStatusBox.x);
 });
 
 test('创建并编辑康奈尔笔记后，刷新仍能恢复全部内容', async ({ page }) => {
