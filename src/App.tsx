@@ -9,7 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { ReviewCoach } from './components/ReviewCoach.js';
-import { createBuiltinExampleNote } from './domain/builtin-example.js';
+import { BUILTIN_EXAMPLE_NOTE_ID } from './domain/builtin-example.js';
 import {
   createNote,
   searchNotes,
@@ -170,11 +170,7 @@ export default function App() {
       let loadedNotes = result.notes;
 
       if (loadedNotes.length === 0) {
-        loadedNotes = [
-          result.isFirstRun === true
-            ? createBuiltinExampleNote()
-            : createNote({ date: today() }),
-        ];
+        loadedNotes = [createNote({ date: today() })];
         if (result.error) {
           setSaveState('error');
         } else {
@@ -188,8 +184,15 @@ export default function App() {
 
       if (cancelled) return;
       commitNotes(loadedNotes);
-      commitSelectedId(loadedNotes[0].id);
-      if (result.error) showToast('本地数据无法读取，已进入空白笔记。', 'error');
+      const migratedExample = result.didSeedBuiltinExample
+        ? loadedNotes.find((note) => note.id === BUILTIN_EXAMPLE_NOTE_ID)
+        : undefined;
+      commitSelectedId(migratedExample?.id ?? loadedNotes[0].id);
+      if (result.error) {
+        showToast('本地数据无法读取，已进入空白笔记。', 'error');
+      } else if (migratedExample) {
+        showToast('已添加经典康奈尔笔记示例，原有笔记未改变。');
+      }
     }).catch(() => {
       if (cancelled) return;
       const blankNote = createNote({ date: today() });

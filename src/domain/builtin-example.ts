@@ -1,6 +1,8 @@
 import { createNote, type Note } from './note-store.js';
 
 export const BUILTIN_EXAMPLE_NOTE_ID = 'builtin-example:codex-workshop:v1';
+export const BUILTIN_EXAMPLE_SEED_STATE_KEY =
+  'cornell-builtin-example-seed:codex-workshop:v1';
 
 const BUILTIN_EXAMPLE_TIMESTAMP = '2026-06-08T00:00:00.000Z';
 

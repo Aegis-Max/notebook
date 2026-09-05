@@ -168,12 +168,13 @@ export function registerIpcHandlers(services: IpcServices): void {
   handle(IPC_CHANNELS.notesLoad, getWindow, async () => {
     try {
       const result = await data.loadNotes();
-      return { ...result, error: null };
+      return { ...result, error: null, didSeedBuiltinExample: false };
     } catch (error) {
       return {
         notes: [],
         error: errorMessage(error, '读取笔记失败'),
         isFirstRun: false,
+        didSeedBuiltinExample: false,
       };
     }
   });

@@ -93,7 +93,7 @@ test('全新 Electron 数据目录内置一份经典示例，删除后重启不�
   expect(loaded.notes.some((note) => note.id === builtInExample.id)).toBe(false);
 });
 
-test('已有合法 Electron 空库时不播种内置示例', async () => {
+test('已有合法 Electron 空库时也播种内置示例', async () => {
   const userData = await createUserData();
   await writeFile(
     join(userData, 'cornell-data.json'),
@@ -106,13 +106,66 @@ test('已有合法 Electron 空库时不播种内置示例', async () => {
   );
 
   const { page } = await launch(userData);
-  await expect(page.getByTestId('note-title')).toHaveValue('');
+  await expect(page.getByTestId('note-title')).toHaveValue(builtInExample.title);
   await expect(page.getByTestId('note-item')).toHaveCount(1);
   const loaded = await page.evaluate(() => window.cornellDesktop!.notes.load());
   expect(loaded.error).toBeNull();
   expect(loaded.notes).toHaveLength(1);
-  expect(loaded.notes[0].id).not.toBe(builtInExample.id);
-  expect(loaded.notes[0].title).toBe('');
+  expect(loaded.notes[0]).toMatchObject(builtInExample);
+});
+
+test('旧版合法 Electron 数据库无损追加示例并在迁移时选中', async () => {
+  const userData = await createUserData();
+  const existingNote = {
+    id: 'existing-user-note',
+    title: '用户原有笔记',
+    date: '2026-09-04',
+    cues: '原有线索  保留空格',
+    notes: '原有正文\n\n第二段',
+    summary: '原有总结',
+    createdAt: '2026-09-04T01:00:00.000Z',
+    updatedAt: '2026-09-04T02:34:56.789Z',
+  };
+  await writeFile(
+    join(userData, 'cornell-data.json'),
+    JSON.stringify({
+      schemaVersion: 2,
+      notes: [existingNote],
+      review: { sessions: [], cards: [], attempts: [] },
+    }),
+    'utf8',
+  );
+
+  let launched = await launch(userData);
+  await expect(launched.page.getByTestId('note-title')).toHaveValue(builtInExample.title);
+  await expect(launched.page.getByTestId('toast')).toContainText(
+    '已添加经典康奈尔笔记示例',
+  );
+  let loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes.filter((note) => note.id === builtInExample.id)).toHaveLength(1);
+  expect(loaded.notes.find((note) => note.id === existingNote.id)).toEqual(existingNote);
+
+  await closeApplication();
+  launched = await launch(userData);
+  loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes.filter((note) => note.id === builtInExample.id)).toHaveLength(1);
+  expect(loaded.notes.find((note) => note.id === existingNote.id)).toEqual(existingNote);
+
+  const exampleItem = launched.page.locator(
+    `[data-testid="note-item"][data-note-id="${builtInExample.id}"]`,
+  );
+  await expect(exampleItem).toHaveCount(1);
+  await exampleItem.click();
+  await expect(launched.page.getByTestId('note-title')).toHaveValue(builtInExample.title);
+  await launched.page.getByTestId('delete-note-button').click();
+  await launched.page.getByTestId('delete-confirm-button').click();
+  await expect(launched.page.getByTestId('note-title')).toHaveValue(existingNote.title);
+
+  await closeApplication();
+  launched = await launch(userData);
+  loaded = await launched.page.evaluate(() => window.cornellDesktop!.notes.load());
+  expect(loaded.notes).toEqual([existingNote]);
+  expect(loaded.notes.some((note) => note.id === builtInExample.id)).toBe(false);
 });
 
 test('安全 preload 白名单可用，笔记跨 Electron 重启持久化', async () => {

@@ -16,6 +16,8 @@ export interface LoadNotesResult {
   error: string | null;
   /** 仅表示持久化载体尚未建立，不表示已存储的笔记集合为空。 */
   isFirstRun: boolean;
+  /** 仅在本次加载实际追加了内置示例时为 true。 */
+  didSeedBuiltinExample: boolean;
 }
 
 export interface ImportResult extends SaveResult {

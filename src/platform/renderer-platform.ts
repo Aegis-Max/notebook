@@ -1,4 +1,9 @@
 import {
+  BUILTIN_EXAMPLE_NOTE_ID,
+  BUILTIN_EXAMPLE_SEED_STATE_KEY,
+  createBuiltinExampleNote,
+} from '../domain/builtin-example.js';
+import {
   createBackup,
   loadNotes,
   mergeNotes,
@@ -44,7 +49,66 @@ async function browserLoad(): Promise<LoadNotesResult> {
     notes: result.notes,
     error: result.error?.message ?? null,
     isFirstRun: result.isFirstRun,
+    didSeedBuiltinExample: false,
   };
+}
+
+type SaveNotes = (notes: Note[]) => Promise<SaveResult>;
+
+function migrationStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把内置示例按版本投放一次。pending 状态让“标记成功、笔记保存失败”可在
+ * 下次启动继续；complete 与笔记本身分离，确保用户删除示例后不会复活。
+ */
+async function seedBuiltinExampleOnce(
+  result: LoadNotesResult,
+  save: SaveNotes,
+): Promise<LoadNotesResult> {
+  if (result.error) return { ...result, didSeedBuiltinExample: false };
+
+  const storage = migrationStorage();
+  if (!storage) return { ...result, didSeedBuiltinExample: false };
+
+  try {
+    if (storage.getItem(BUILTIN_EXAMPLE_SEED_STATE_KEY) === 'complete') {
+      return { ...result, didSeedBuiltinExample: false };
+    }
+    storage.setItem(BUILTIN_EXAMPLE_SEED_STATE_KEY, 'pending');
+  } catch {
+    return { ...result, didSeedBuiltinExample: false };
+  }
+
+  if (result.notes.some((note) => note.id === BUILTIN_EXAMPLE_NOTE_ID)) {
+    try {
+      storage.setItem(BUILTIN_EXAMPLE_SEED_STATE_KEY, 'complete');
+    } catch {
+      // 保留 pending，下次启动只会重试标记，不会复制同 ID 示例。
+    }
+    return { ...result, didSeedBuiltinExample: false };
+  }
+
+  const notes = sortNotes([...result.notes, createBuiltinExampleNote()]);
+  let saved: SaveResult;
+  try {
+    saved = await save(notes);
+  } catch {
+    return { ...result, didSeedBuiltinExample: false };
+  }
+  if (!saved.ok) return { ...result, didSeedBuiltinExample: false };
+
+  try {
+    storage.setItem(BUILTIN_EXAMPLE_SEED_STATE_KEY, 'complete');
+  } catch {
+    // 笔记已经安全保存；保留 pending 以便下次启动补齐幂等标记。
+  }
+  return { ...result, notes, didSeedBuiltinExample: true };
 }
 
 async function browserSave(notes: Note[]): Promise<SaveResult> {
@@ -129,7 +193,11 @@ async function browserExport(notes: Note[]) {
 export const rendererNotesApi: RendererNotesApi = {
   async load() {
     const api = desktopApi();
-    return api ? api.notes.load() : browserLoad();
+    const result = api ? await api.notes.load() : await browserLoad();
+    return seedBuiltinExampleOnce(
+      result,
+      (notes) => api ? api.notes.save(notes) : browserSave(notes),
+    );
   },
 
   async save(notes) {
